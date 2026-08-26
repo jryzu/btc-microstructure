@@ -1,0 +1,19 @@
+{
+  "book": {
+    "raw_snapshots": 80587,
+    "out_of_order": 0,
+    "dropped_crossed": 0,
+    "dropped_nonpos": 0,
+    "dropped_dupes": 0,
+    "gaps_over_5s": 8,
+    "max_gap_ms": 2639954,
+    "clean_snapshots": 80587,
+    "median_spacing_ms": 100.0
+  },
+  "trades": {
+    "raw_trades": 109563,
+    "median_recv_latency_ms": 64.0,
+    "p99_recv_latency_ms": 607.3800000000047,
+    "clean_trades": 109563
+  }
+}
