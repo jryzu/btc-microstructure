@@ -11,10 +11,10 @@ _Final. Last updated: 2026-08-26._
   grid → timestamp-validated 1 s/5 s labels → chronological 60/20/20 models →
   cost-aware taker backtest with validation-only threshold selection →
   6 figures. Reruns end-to-end with the six commands in `RUNBOOK.md`.
-- **Tests**: 21 passing (`pytest -q`) — imbalance/microprice/mid arithmetic,
+- **Tests**: 22 passing (`pytest -q`) — imbalance/microprice/mid arithmetic,
   grid causality, trade-window future-exclusion, label alignment and an
-  explicit leakage-injection test, execution-cost arithmetic, one-position
-  constraint, latency lookup.
+  explicit leakage-injection test, realized-vol gap masking, execution-cost
+  arithmetic, one-position constraint, latency lookup.
 
 ## What does not / was not built
 
@@ -36,10 +36,11 @@ _Final. Last updated: 2026-08-26._
 - Imbalance decile → forward return: monotone, −0.34…+0.30 bps (1 s),
   −0.83…+0.65 bps (5 s).
 - Direction AUC: 0.74 (1 s) from raw imbalance alone; models add ~nothing.
-- Ridge return signal IC: 0.19 at 1 s (0.18 non-overlapping, p≈6e-13);
+- Ridge return signal IC: 0.19 at 1 s (0.18 non-overlapping, p≈8e-13);
   0.12 (non-overlap) at 5 s.
-- Backtest (98th-pct threshold, 100 ms latency): +0.50 bps avg gross/trade at
-  1 s; −19.5 bps net at 10 bps/side taker fee; breakeven ≈ 0.25 bps/side;
+- Backtest (98th-pct threshold, 100 ms latency): +0.52 bps avg gross/trade at
+  1 s (5 s already negative gross); −19.5 bps net at 10 bps/side taker fee;
+  breakeven ≈ 0.26 bps/side;
   1,000 ms latency erases the gross edge entirely.
 - Verdict: real signal, unexploitable via taker execution; value is in
   maker quote-skewing / adverse-selection avoidance.
@@ -53,7 +54,7 @@ _Final. Last updated: 2026-08-26._
 
 ## Known limitations
 
-Single afternoon/venue/regime; short-dominated test trades (50/52) due to a
+Single afternoon/venue/regime; short-dominated test trades (45/47) due to a
 mild downtrend; overlapping labels (mitigated by non-overlap ICs);
 partial-depth stream; capture gaps; no queue modeling.
 
@@ -80,7 +81,7 @@ partial-depth stream; capture gaps; no queue modeling.
    fee/latency sensitivity analysis on live-captured Binance data.
 3. Built a websocket market-data capture and research stack (Python,
    pandas/sklearn, Parquet) for BTC/USDT top-of-book data; quantified signal
-   decay (~1 s half-life) and breakeven fee (~0.25 bps/side) for an
+   decay (~1 s half-life) and breakeven fee (~0.26 bps/side) for an
    imbalance-based taker strategy, reporting an honest negative economic result.
 
 ## Interview talking points
@@ -106,7 +107,7 @@ partial-depth stream; capture gaps; no queue modeling.
    sweep modeling. I deliberately did not simulate passive fills, because
    public data can't see queue position.
 6. **What happens when latency increases?** Gross edge at 1 s goes from
-   +0.57 bps (0 ms) to −0.20 bps (1,000 ms): the signal fully decays within
+   +0.58 bps (0 ms) to −0.19 bps (1,000 ms): the signal fully decays within
    ~1 s, consistent with the IC drop from 1 s to 5 s horizons.
 7. **What is adverse selection here?** The maker filling my aggressive order
    loses ~0.5 bps in expectation when my signal fires. The signal's real use
@@ -135,7 +136,7 @@ partial-depth stream; capture gaps; no queue modeling.
 > Then I made it trade. Buying the ask on strong signals earns +0.5 bps
 > gross per trade — the signal even beats the spread, which on BTCUSDT is one
 > tick 99.9% of the time. But at a 10 bps taker fee, every single trade loses.
-> Breakeven fee: ~0.25 bps/side. That tier doesn't exist for takers.
+> Breakeven fee: ~0.26 bps/side. That tier doesn't exist for takers.
 >
 > The information is real; it just belongs to market makers — as a reason to
 > skew quotes, not to cross spreads. Sometimes the best thing a backtest can

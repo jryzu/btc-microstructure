@@ -128,6 +128,10 @@ def dynamics_features(grid: pd.DataFrame, grid_ms: int) -> pd.DataFrame:
     for lb_ms, name in ((1000, "1s"), (5000, "5s")):
         out[f"ret_past_{name}"] = logmid - np.log(lagged(mid, lb_ms))
     r1 = pd.Series(logmid).diff()
+    # a "return" spanning a grid gap is not a one-step return; mask it so it
+    # cannot contaminate the realized-vol window after a capture gap
+    valid_step = np.concatenate([[False], np.diff(ts) == grid_ms])
+    r1[~valid_step] = np.nan
     out["rv_30s"] = r1.rolling(int(30000 / grid_ms), min_periods=10).std().to_numpy()
     out["spread_chg_5s"] = grid["spread_bps"].to_numpy() - lagged(grid["spread_bps"].to_numpy(), 5000)
     with np.errstate(invalid="ignore", divide="ignore"):

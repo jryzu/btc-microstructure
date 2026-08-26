@@ -67,7 +67,7 @@ return is cleanly monotone: roughly −0.34 bps to +0.30 bps average forward
 - A ridge regression predicting the return itself achieves an information
   coefficient of 0.19 at 1 s. Because 500 ms sampling overlaps 1–5 s labels,
   I recomputed the IC on non-overlapping subsamples: 0.18 at 1 s
-  (n=1,540, p≈6e-13) and 0.12 at 5 s (n=305, p≈0.03). The signal is real
+  (n=1,540, p≈8e-13) and 0.12 at 5 s (n=305, p≈0.05). The signal is real
   and decays with horizon: per unit time the 1 s edge is far stronger.
 - Directional accuracy is not a headline metric here: 73% of 1 s intervals
   have exactly zero mid change, so class balance makes accuracy misleading;
@@ -85,20 +85,20 @@ prevailing after a configurable latency, exit at the bid after the horizon;
 mirrored for shorts; one position at a time; taker fee charged both legs.
 
 At the validation-chosen threshold (~98th percentile of |signal|), the test
-set produced 52 trades at 1 s and 35 at 5 s. Average **gross** edge per trade
-— after crossing the spread, before fees — was **+0.50 bps at 1 s** and
-+0.05 bps at 5 s. The signal genuinely beats the spread. But at Binance's
+set produced 47 trades at 1 s and 31 at 5 s. Average **gross** edge per trade
+— after crossing the spread, before fees — was **+0.52 bps at 1 s**; at 5 s it was
+already gone even gross (−0.05 bps). At 1 s the signal genuinely beats the spread. But at Binance's
 standard 10 bps/side taker fee the average **net** result is **−19.5 bps per
 trade**; every single trade lost net of fees. The fee sensitivity is linear
-and brutal: the strategy breaks even at roughly **0.25 bps per side** at 1 s
+and brutal: the strategy breaks even at roughly **0.26 bps per side** at 1 s
 — 40× below the standard fee tier and still below the best VIP taker tiers
 (~1.6–2 bps). Latency matters second-order by comparison: raising execution
-delay from 0 to 1,000 ms erodes the 1 s gross edge from +0.57 bps to −0.20
+delay from 0 to 1,000 ms erodes the 1 s gross edge from +0.58 bps to −0.19
 bps, i.e. the entire alpha is gone within about a second — consistent with
 the 1 s-scale signal decay measured above.
 
 Two caveats on the backtest itself. The test period drifted mildly downward
-and the model went short in 50 of 52 trades, so the long side is essentially
+and the model went short in 45 of 47 trades, so the long side is essentially
 untested. And fills are assumed at the displayed top-of-book quote with no
 market impact — fine for small size, optimistic beyond it.
 

@@ -105,3 +105,22 @@ def test_signed_volume_convention():
         "recv_ts_ms": [950], "qty": [3.0], "is_buyer_maker": [True]})
     tf = trade_window_features(grid, trades)
     assert tf["signed_vol_1s"].iloc[0] == pytest.approx(-3.0)
+
+
+def test_rv_not_contaminated_by_grid_gap():
+    """A return spanning a capture gap must not enter realized vol."""
+    from src.features import dynamics_features
+    ts = list(range(0, 10000, 500)) + list(range(100000, 140000, 500))
+    mid = [100.0 + 0.001 * i for i in range(len(ts))]
+    grid = pd.DataFrame({
+        "ts_ms": np.array(ts, dtype=np.int64),
+        "mid": mid,
+        "spread_bps": 1.0,
+        "depth_total_20": 10.0,
+    })
+    dyn = dynamics_features(grid, grid_ms=500)
+    # rows shortly after the gap: their rv window contains the gap-spanning
+    # step, which must be masked out, keeping rv at the small per-step scale
+    post_gap = dyn["rv_30s"].iloc[25:40].dropna()
+    per_step = abs(np.log(mid[1] / mid[0]))
+    assert (post_gap < per_step * 10).all()

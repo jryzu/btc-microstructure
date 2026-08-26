@@ -11,17 +11,17 @@ survives spread, fees, and latency for an aggressive (taker) trader.
   imbalance-decile → forward-return curve is cleanly monotone (−0.34 to
   +0.30 bps at 1 s); direction AUC is 0.74 from raw level-1 imbalance alone;
   a ridge predicted-return signal reaches IC 0.19 at 1 s (0.18 on
-  non-overlapping samples, p ≈ 6e-13) on a held-out chronological test set.
+  non-overlapping samples, p ≈ 8e-13) on a held-out chronological test set.
 - **The signal even beats the spread**: BTCUSDT's spread is one tick
-  (~0.0013 bps) 99.9% of the time, and strong signals earned **+0.50 bps
+  (~0.0013 bps) 99.9% of the time, and strong signals earned **+0.52 bps
   gross per trade** at 1 s after crossing it.
 - **It does not survive taker fees.** At Binance's standard 10 bps/side taker
   fee, every simulated trade lost money (−19.5 bps/trade net). Breakeven
-  requires ~**0.25 bps/side** — ~40× below the standard tier and below even
+  requires ~**0.26 bps/side** — ~40× below the standard tier and below even
   top VIP taker tiers.
 - **The signal dies in about one second.** Adding 1,000 ms of execution
-  latency erases the entire gross edge (+0.57 → −0.20 bps); IC falls ~40%
-  from 1 s to 5 s horizons.
+  latency erases the entire gross edge (+0.58 → −0.19 bps); IC falls by a third
+  from 1 s to 5 s horizons, and the 5 s gross edge is already negative.
 - **Conclusion:** this is information for market makers (quote skewing,
   adverse-selection avoidance), not a taker strategy. A negative economic
   result, reported as measured.
@@ -102,10 +102,10 @@ The economics — gross edge exists, fees erase it, latency erodes it:
 |---|---|---|
 | Direction AUC (raw imbalance) | 0.74 | 0.67 |
 | IC, ridge signal (non-overlap) | 0.18 | 0.12 |
-| Trades at chosen threshold | 52 | 35 |
-| Avg gross edge / trade | +0.50 bps | +0.05 bps |
-| Avg net @ 10 bps taker fee | −19.5 bps | −19.9 bps |
-| Breakeven fee | ~0.25 bps/side | ~0.03 bps/side |
+| Trades at chosen threshold | 47 | 31 |
+| Avg gross edge / trade | +0.52 bps | −0.05 bps |
+| Avg net @ 10 bps taker fee | −19.5 bps | −20.0 bps |
+| Breakeven fee | ~0.26 bps/side | — (gross < 0) |
 
 ## Trading reality check
 
@@ -138,7 +138,7 @@ The economics — gross edge exists, fees erase it, latency erodes it:
 ## Limitations
 
 One afternoon, one venue, one regime (~2.2 h usable, mild downward drift —
-50 of 52 test trades were shorts, so the long side is weakly tested).
+45 of 47 test trades were shorts, so the long side is weakly tested).
 Capture gaps from the collection machine sleeping. No exchange timestamps on
 depth snapshots. Partial-depth (top-20) snapshots, not a reconstructed full
 book. Overlapping labels (mitigated with non-overlapping IC checks). No
