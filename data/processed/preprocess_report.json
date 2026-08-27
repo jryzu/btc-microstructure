@@ -1,19 +1,40 @@
 {
-  "book": {
-    "raw_snapshots": 80587,
-    "out_of_order": 0,
-    "dropped_crossed": 0,
-    "dropped_nonpos": 0,
-    "dropped_dupes": 0,
-    "gaps_over_5s": 8,
-    "max_gap_ms": 2639954,
-    "clean_snapshots": 80587,
-    "median_spacing_ms": 100.0
+  "spot": {
+    "book": {
+      "raw_snapshots": 132559,
+      "out_of_order": 0,
+      "dropped_crossed": 0,
+      "dropped_nonpos": 0,
+      "dropped_dupes": 0,
+      "gaps_over_5s": 11,
+      "max_gap_ms": 161232577,
+      "clean_snapshots": 132559,
+      "median_spacing_ms": 100.0
+    },
+    "trades": {
+      "raw_trades": 144659,
+      "median_recv_latency_ms": 60.0,
+      "p99_recv_latency_ms": 487.0,
+      "clean_trades": 144659
+    }
   },
-  "trades": {
-    "raw_trades": 109563,
-    "median_recv_latency_ms": 64.0,
-    "p99_recv_latency_ms": 607.3800000000047,
-    "clean_trades": 109563
+  "perp": {
+    "book": {
+      "raw_snapshots": 48035,
+      "out_of_order": 0,
+      "dropped_crossed": 0,
+      "dropped_nonpos": 0,
+      "dropped_dupes": 0,
+      "gaps_over_5s": 3,
+      "max_gap_ms": 77148,
+      "clean_snapshots": 48035,
+      "median_spacing_ms": 103.0
+    },
+    "trades": {
+      "raw_trades": 102473,
+      "median_recv_latency_ms": 52.0,
+      "p99_recv_latency_ms": 151.0,
+      "clean_trades": 101666
+    }
   }
 }
