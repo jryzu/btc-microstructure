@@ -5,3 +5,4 @@ __pycache__/
 data/raw/*.jsonl.gz
 data/processed/*.parquet
 .DS_Store
+logs/
