@@ -1,6 +1,13 @@
 # STATUS
 
-_Final. Last updated: 2026-08-26._
+_v2 IN PROGRESS (2026-08-27): dual-venue collection running (spot + perp,
+48 h target, started 19:42 UTC). v2 stack built and smoke-tested: walk-forward
+models, signal-replication module, EV-rule taker backtest (no-trade optimum),
+maker quoting sim with through/touch fill brackets, cross-venue features.
+Interim analyses will land as data accumulates; sections below describe v1
+until the v2 final run replaces them._
+
+_v1 final follows. Last updated: 2026-08-26._
 
 ## What works
 
