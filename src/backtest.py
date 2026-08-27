@@ -1,29 +1,28 @@
-"""Cost-aware aggressive execution test.
+"""Cost-aware aggressive (taker) execution test — v2.
 
-Rule: at grid time t a model emits a signal s symmetric around zero
-(predicted forward return for the ridge model; P(up) - 0.5 for the
-classifiers; raw level-1 imbalance for the heuristic). If s > thr, buy at
-the ask prevailing at t + latency and exit at the bid prevailing at
-t + latency + h. If s < -thr, mirror short. One position at a time
-(signals during an open trade are ignored), unit notional per trade.
+Signal: the ridge model's predicted forward return (or a classifier signal
+recentred at zero). Decision rule is expected-value based:
 
-Candidate thresholds are quantiles of |s| computed on the VALIDATION set
-(so the grid adapts to each signal's scale); the threshold maximizing
-validation net P&L (with >= 20 trades) is then applied unchanged to the
-TEST set.
+    trade long  if  s > breakeven + margin
+    trade short if  s < -(breakeven + margin)
 
-Execution prices are looked up from the raw snapshot stream (last depth20
-snapshot at or before the execution timestamp), so latency need not align
-with the analysis grid. Taker fee is charged on both legs.
+where breakeven = round-trip cost in return units (2 * fee + observed spread
+cost) and margin is a safety buffer chosen on the walk-forward region from a
+small grid. "No trade anywhere" is a perfectly legal optimum: if no margin
+produces positive expected net P&L on the wf region, the chosen policy is to
+stay flat, and that is reported as the result.
 
-Net simple return of a long:  bid_exit * (1 - fee) / (ask_entry * (1 + fee)) - 1
-Net simple return of a short: bid_entry * (1 - fee) / (ask_exit * (1 + fee)) - 1
+Venues and default fees (per side, VIP0, no BNB discount):
+  - spot: taker 10 bps.  Shorting spot is NOT frictionless (borrow needed);
+    spot runs report the long-only variant as the economically honest one.
+  - perp: taker 5 bps. Longs and shorts are symmetric and legitimate.
 
-Fee/latency sensitivity grids are reported on the test set for the chosen
-threshold.
+Region discipline: all selection happens on the `wf` (walk-forward
+out-of-sample) predictions. The final holdout is simulated only when
+--final is passed, once, with the wf-chosen policy frozen.
 
 Usage:
-    python -m src.backtest [--model s_ridge] [--horizons-s 1 5]
+    python -m src.backtest --venue perp [--final]
 """
 from __future__ import annotations
 
@@ -36,55 +35,49 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_FEE_BPS = 10.0          # Binance spot taker, standard tier
-DEFAULT_LATENCY_MS = 100.0
-FEE_GRID_BPS = [0.0, 1.0, 2.5, 5.0, 7.5, 10.0]
+VENUE_FEES = {  # taker bps per side: default + sensitivity grid
+    "spot": {"default": 10.0, "grid": [0.0, 1.0, 2.5, 5.0, 7.5, 10.0]},
+    "perp": {"default": 5.0, "grid": [0.0, 1.0, 1.8, 2.5, 4.5, 5.0]},
+}
+MARGIN_GRID_BPS = [0.0, 0.1, 0.25, 0.5, 1.0, 2.0]
 LATENCY_GRID_MS = [0.0, 100.0, 250.0, 500.0, 1000.0]
-THRESHOLD_QUANTILES = [0.0, 0.5, 0.7, 0.8, 0.9, 0.95, 0.98]
+QUANTILE_DIAG = [0.5, 0.8, 0.9, 0.95, 0.98]
 
 
 class BookLookup:
-    """As-of lookup of best bid/ask from raw snapshots."""
-
     def __init__(self, book: pd.DataFrame):
         b = book.sort_values("recv_ts_ms", kind="stable")
         self.ts = b["recv_ts_ms"].to_numpy(dtype=np.int64)
         self.bid = b["bid_px_0"].to_numpy()
         self.ask = b["ask_px_0"].to_numpy()
 
-    def quotes_at(self, t_ms: np.ndarray, max_staleness_ms: int = 2000) -> tuple[np.ndarray, np.ndarray]:
+    def quotes_at(self, t_ms: np.ndarray, max_staleness_ms: int = 2000):
         idx = np.searchsorted(self.ts, t_ms, side="right") - 1
         valid = (idx >= 0) & (t_ms - self.ts[np.clip(idx, 0, None)] <= max_staleness_ms)
         idx = np.clip(idx, 0, len(self.ts) - 1)
-        bid = np.where(valid, self.bid[idx], np.nan)
-        ask = np.where(valid, self.ask[idx], np.nan)
-        return bid, ask
+        return (np.where(valid, self.bid[idx], np.nan),
+                np.where(valid, self.ask[idx], np.nan))
 
 
 def simulate(preds: pd.DataFrame, lookup: BookLookup, signal_col: str,
              threshold: float, fee_bps: float, latency_ms: float,
-             horizon_ms: int) -> dict:
-    """Sequential one-position-at-a-time simulation. Returns summary stats.
-
-    The signal is symmetric around zero: > threshold goes long,
-    < -threshold goes short.
-    """
+             horizon_ms: int, long_only: bool = False) -> dict:
+    """One-position-at-a-time taker simulation; threshold in return units."""
     ts = preds["ts_ms"].to_numpy(dtype=np.int64)
     s = preds[signal_col].to_numpy()
     fee = fee_bps / 1e4
 
     sig = np.zeros(len(s), dtype=np.int8)
     sig[s > threshold] = 1
-    sig[s < -threshold] = -1
+    if not long_only:
+        sig[s < -threshold] = -1
 
     entry_t = ts + int(latency_ms)
     exit_t = entry_t + horizon_ms
     ebid, eask = lookup.quotes_at(entry_t)
     xbid, xask = lookup.quotes_at(exit_t)
 
-    rets = []
-    sides = []
-    trade_ts = []
+    rets, sides, trade_ts = [], [], []
     busy_until = -1
     for i in range(len(ts)):
         if sig[i] == 0 or ts[i] < busy_until:
@@ -103,102 +96,129 @@ def simulate(preds: pd.DataFrame, lookup: BookLookup, signal_col: str,
         busy_until = exit_t[i]
 
     n = len(rets)
+    base = {"threshold": threshold, "fee_bps": fee_bps, "latency_ms": latency_ms,
+            "long_only": long_only, "n_trades": n}
     if n == 0:
-        return {"n_trades": 0, "threshold": threshold, "fee_bps": fee_bps,
-                "latency_ms": latency_ms}
+        base["net_total_bps"] = 0.0
+        return base
     arr = np.array(rets)
-    gross_bps = arr[:, 0] * 1e4
-    net_bps = arr[:, 1] * 1e4
+    gross_bps, net_bps = arr[:, 0] * 1e4, arr[:, 1] * 1e4
     cum = np.cumsum(net_bps)
     peak = np.maximum.accumulate(cum)
     span_h = (ts[-1] - ts[0]) / 3.6e6
-    return {
-        "threshold": threshold, "fee_bps": fee_bps, "latency_ms": latency_ms,
-        "n_trades": n,
-        "n_long": int(sum(1 for s in sides if s == 1)),
-        "n_short": int(sum(1 for s in sides if s == -1)),
-        "trades_per_hour": float(n / span_h) if span_h > 0 else float("nan"),
+    long_mask = np.array(sides) == 1
+    base.update({
+        "n_long": int(long_mask.sum()), "n_short": int(n - long_mask.sum()),
+        "trades_per_hour": float(n / span_h) if span_h > 0 else np.nan,
         "gross_total_bps": float(gross_bps.sum()),
         "net_total_bps": float(net_bps.sum()),
         "avg_gross_bps": float(gross_bps.mean()),
         "avg_net_bps": float(net_bps.mean()),
+        "avg_net_long_bps": float(net_bps[long_mask].mean()) if long_mask.any() else None,
+        "avg_net_short_bps": float(net_bps[~long_mask].mean()) if (~long_mask).any() else None,
         "win_rate_net": float((net_bps > 0).mean()),
         "max_drawdown_bps": float((peak - cum).max()),
         "trade_ts_ms": trade_ts,
         "net_bps_series": [float(x) for x in net_bps],
-    }
+    })
+    return base
 
 
 def _strip(d: dict) -> dict:
     return {k: v for k, v in d.items() if k not in ("trade_ts_ms", "net_bps_series")}
 
 
-def run(model: str, horizons_s: list[int], fee_bps: float, latency_ms: float,
-        processed_dir: Path) -> dict:
-    book = pd.read_parquet(processed_dir / "book.parquet",
+def run(venue: str, model: str, horizons_s: list[int], fee_bps: float,
+        latency_ms: float, processed_dir: Path, final: bool) -> dict:
+    book = pd.read_parquet(processed_dir / f"book_{venue}.parquet",
                            columns=["recv_ts_ms", "bid_px_0", "ask_px_0"])
     lookup = BookLookup(book)
-    out: dict = {"model": model, "fee_bps": fee_bps, "latency_ms": latency_ms}
+    long_only = venue == "spot"
+    out: dict = {"venue": venue, "model": model, "fee_bps": fee_bps,
+                 "latency_ms": latency_ms, "long_only": long_only,
+                 "policy": "EV-rule: |s| > 2*fee + margin (margin from wf)"}
 
     for h in horizons_s:
-        preds = pd.read_parquet(processed_dir / f"predictions_{h}s.parquet")
-        val = preds[preds["set"] == "val"].reset_index(drop=True)
-        test = preds[preds["set"] == "test"].reset_index(drop=True)
+        preds = pd.read_parquet(processed_dir / f"predictions_{venue}_{h}s.parquet")
+        wf = preds[preds["set"] == "wf"].reset_index(drop=True)
         h_ms = h * 1000
+        rt_cost = 2 * fee_bps / 1e4  # spread cost enters via bid/ask prices
 
-        # candidate thresholds from |signal| quantiles on validation only
-        abs_s = np.abs(val[model].to_numpy())
-        thresholds = sorted(set(float(np.quantile(abs_s, q)) for q in THRESHOLD_QUANTILES))
-        val_scan = [
-            _strip(simulate(val, lookup, model, thr, fee_bps, latency_ms, h_ms))
-            for thr in thresholds
-        ]
-        eligible = [s for s in val_scan if s["n_trades"] >= 20]
-        chosen = max(eligible, key=lambda s: s["net_total_bps"]) if eligible \
-            else max(val_scan, key=lambda s: s.get("net_total_bps", -np.inf))
-        thr = chosen["threshold"]
+        # EV-margin selection on the walk-forward region only
+        wf_scan = [_strip(simulate(wf, lookup, model, rt_cost + m / 1e4,
+                                   fee_bps, latency_ms, h_ms, long_only))
+                   for m in MARGIN_GRID_BPS]
+        best = max(wf_scan, key=lambda s: s["net_total_bps"])
+        trade_worthwhile = best["net_total_bps"] > 0 and best["n_trades"] >= 10
+        chosen_thr = best["threshold"] if trade_worthwhile else None
 
-        test_res = simulate(test, lookup, model, thr, fee_bps, latency_ms, h_ms)
-        fee_sens = [_strip(simulate(test, lookup, model, thr, f, latency_ms, h_ms))
-                    for f in FEE_GRID_BPS]
-        lat_sens = [_strip(simulate(test, lookup, model, thr, fee_bps, lat, h_ms))
-                    for lat in LATENCY_GRID_MS]
-        thr_test_scan = [_strip(simulate(test, lookup, model, t, fee_bps, latency_ms, h_ms))
-                         for t in thresholds]
+        # diagnostics: quantile-threshold scan on wf (NOT used for selection)
+        abs_s = np.abs(wf[model].to_numpy())
+        diag = [_strip(simulate(wf, lookup, model, float(np.quantile(abs_s, q)),
+                                fee_bps, latency_ms, h_ms, long_only))
+                for q in QUANTILE_DIAG]
 
-        out[f"{h}s"] = {
-            "chosen_threshold": thr,
-            "threshold_grid": thresholds,
-            "validation_scan": val_scan,
-            "test": test_res,
-            "fee_sensitivity_test": fee_sens,
-            "latency_sensitivity_test": lat_sens,
-            "threshold_scan_test_diagnostic": thr_test_scan,
+        block = {
+            "wf_margin_scan": wf_scan,
+            "wf_quantile_diagnostic": diag,
+            "chosen_policy": ("no_trade" if not trade_worthwhile else
+                              {"threshold": chosen_thr,
+                               "margin_bps": (chosen_thr - rt_cost) * 1e4}),
         }
-        t = test_res
-        print(f"h={h}s thr={thr:.3g}: trades={t['n_trades']} "
-              f"avg_gross={t.get('avg_gross_bps', float('nan')):.2f}bps "
-              f"avg_net={t.get('avg_net_bps', float('nan')):.2f}bps "
-              f"net_total={t.get('net_total_bps', float('nan')):.1f}bps")
+
+        # zero-fee wf diagnostic: is there ANY executable gross edge?
+        zf = [_strip(simulate(wf, lookup, model, m / 1e4, 0.0, latency_ms,
+                              h_ms, long_only)) for m in MARGIN_GRID_BPS]
+        block["wf_zero_fee_scan"] = zf
+
+        if final:
+            hold = preds[preds["set"] == "holdout"].reset_index(drop=True)
+            thr = chosen_thr if trade_worthwhile else None
+            if thr is None:
+                block["holdout"] = {"policy": "no_trade", "n_trades": 0,
+                                    "net_total_bps": 0.0,
+                                    "note": "wf region found no positive-EV policy; staying flat"}
+            else:
+                res = simulate(hold, lookup, model, thr, fee_bps, latency_ms, h_ms, long_only)
+                block["holdout"] = res
+                block["holdout_fee_sensitivity"] = [
+                    _strip(simulate(hold, lookup, model, thr, f, latency_ms, h_ms, long_only))
+                    for f in VENUE_FEES[venue]["grid"]]
+                block["holdout_latency_sensitivity"] = [
+                    _strip(simulate(hold, lookup, model, thr, fee_bps, lat, h_ms, long_only))
+                    for lat in LATENCY_GRID_MS]
+        out[f"{h}s"] = block
+
+        pol = block["chosen_policy"]
+        b = best
+        print(f"{venue} h={h}s: wf best margin -> trades={b['n_trades']} "
+              f"net_total={b['net_total_bps']:.1f}bps -> policy="
+              f"{'NO TRADE' if pol == 'no_trade' else f'thr={chosen_thr:.3g}'}"
+              + (f" | holdout: {block['holdout'].get('n_trades', 0)} trades, "
+                 f"net={block['holdout'].get('net_total_bps', 0):.1f}bps" if final else ""))
     return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--venue", default="perp", choices=["spot", "perp"])
     ap.add_argument("--model", default="s_ridge",
                     choices=["s_ridge", "s_gbt", "s_logistic", "s_imbalance"])
     ap.add_argument("--horizons-s", type=int, nargs="+", default=[1, 5])
-    ap.add_argument("--fee-bps", type=float, default=DEFAULT_FEE_BPS)
-    ap.add_argument("--latency-ms", type=float, default=DEFAULT_LATENCY_MS)
+    ap.add_argument("--fee-bps", type=float, default=None)
+    ap.add_argument("--latency-ms", type=float, default=100.0)
+    ap.add_argument("--final", action="store_true",
+                    help="evaluate the holdout ONCE with the wf-frozen policy")
     ap.add_argument("--processed-dir", default=str(ROOT / "data" / "processed"))
     args = ap.parse_args()
+    fee = args.fee_bps if args.fee_bps is not None else VENUE_FEES[args.venue]["default"]
 
-    res = run(args.model, args.horizons_s, args.fee_bps, args.latency_ms,
-              Path(args.processed_dir))
+    res = run(args.venue, args.model, args.horizons_s, fee, args.latency_ms,
+              Path(args.processed_dir), args.final)
 
     reports_path = ROOT / "reports" / "results.json"
     all_results = json.loads(reports_path.read_text()) if reports_path.exists() else {}
-    all_results.setdefault("backtest", {})[args.model] = res
+    all_results.setdefault("backtest", {})[f"{args.venue}_{args.model}"] = res
     reports_path.write_text(json.dumps(all_results, indent=2))
     print(f"wrote {reports_path}")
 

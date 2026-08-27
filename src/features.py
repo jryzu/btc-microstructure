@@ -139,28 +139,136 @@ def dynamics_features(grid: pd.DataFrame, grid_ms: int) -> pd.DataFrame:
     return out
 
 
+def ofi_events(book: pd.DataFrame, max_step_ms: int = 2000) -> pd.DataFrame:
+    """Event-based order-flow imbalance (Cont/Kukanov/Stoikov style) from
+    consecutive top-of-book snapshots.
+
+    e_n = 1[Pb_n >= Pb_{n-1}]*Qb_n - 1[Pb_n <= Pb_{n-1}]*Qb_{n-1}
+        - 1[Pa_n <= Pa_{n-1}]*Qa_n + 1[Pa_n >= Pa_{n-1}]*Qa_{n-1}
+
+    Snapshot pairs separated by more than max_step_ms (capture gaps) are
+    masked to zero contribution.
+    """
+    ts = book["recv_ts_ms"].to_numpy(dtype=np.int64)
+    pb, qb = book["bid_px_0"].to_numpy(), book["bid_qty_0"].to_numpy()
+    pa, qa = book["ask_px_0"].to_numpy(), book["ask_qty_0"].to_numpy()
+    e = np.zeros(len(book))
+    if len(book) > 1:
+        up_b = pb[1:] >= pb[:-1]
+        dn_b = pb[1:] <= pb[:-1]
+        dn_a = pa[1:] <= pa[:-1]
+        up_a = pa[1:] >= pa[:-1]
+        contrib = (up_b * qb[1:] - dn_b * qb[:-1]
+                   - dn_a * qa[1:] + up_a * qa[:-1])
+        contrib[(ts[1:] - ts[:-1]) > max_step_ms] = 0.0
+        e[1:] = contrib
+    return pd.DataFrame({"recv_ts_ms": ts, "ofi_event": e})
+
+
+def ofi_window_features(grid: pd.DataFrame, ofi: pd.DataFrame,
+                        windows_s: tuple = (1, 5)) -> pd.DataFrame:
+    """Sum snapshot-level OFI events over (t-w, t] windows on the grid."""
+    ts = ofi["recv_ts_ms"].to_numpy(dtype=np.int64)
+    c = np.concatenate([[0.0], np.cumsum(ofi["ofi_event"].to_numpy())])
+    g = grid["ts_ms"].to_numpy(dtype=np.int64)
+    hi = np.searchsorted(ts, g, side="right")
+    out = {}
+    for w in windows_s:
+        lo = np.searchsorted(ts, g - w * 1000, side="right")
+        out[f"ofi_{w}s"] = c[hi] - c[lo]
+    return pd.DataFrame(out, index=grid.index)
+
+
+def regime_features(grid: pd.DataFrame, tf: pd.DataFrame, grid_ms: int) -> pd.DataFrame:
+    """Trailing-normalized activity/liquidity state + interactions.
+    All rolling stats are past-only (window ends at the current row)."""
+    out = pd.DataFrame(index=grid.index)
+    win = int(300_000 / grid_ms)  # 5 min
+    n1 = tf["n_trades_1s"]
+    mu, sd = n1.rolling(win, min_periods=60).mean(), n1.rolling(win, min_periods=60).std()
+    out["burst_1s"] = ((n1 - mu) / sd.replace(0.0, np.nan)).to_numpy()
+    depth = np.log(grid["depth_total_20"])
+    dmu, dsd = depth.rolling(win, min_periods=60).mean(), depth.rolling(win, min_periods=60).std()
+    out["depth_z"] = ((depth - dmu) / dsd.replace(0.0, np.nan)).to_numpy()
+    # past-only reference: expanding median, so no full-sample statistic leaks
+    exp_med = grid["spread_bps"].expanding(min_periods=60).median()
+    out["wide_spread"] = (grid["spread_bps"] > exp_med).astype(float).where(exp_med.notna()).to_numpy()
+    out["flow_x_imb"] = (tf["trade_imb_5s"] * grid["imbalance_1"]).to_numpy()
+    return out
+
+
 def build_features(book: pd.DataFrame, trades: pd.DataFrame,
                    grid_ms: int = 500, max_staleness_ms: int = 1000) -> pd.DataFrame:
     bf = book_state_features(book)
     grid = make_grid(bf, grid_ms, max_staleness_ms)
     tf = trade_window_features(grid, trades)
     dyn = dynamics_features(grid, grid_ms)
-    return pd.concat([grid, tf, dyn], axis=1)
+    ofi = ofi_window_features(grid, ofi_events(book))
+    reg = regime_features(grid, tf, grid_ms)
+    feats = pd.concat([grid, tf, dyn, ofi, reg], axis=1)
+    # longer momentum lookbacks (validated row shifts, same mechanism as dyn)
+    ts = feats["ts_ms"].to_numpy(dtype=np.int64)
+    logmid = np.log(feats["mid"].to_numpy())
+    for lb_ms, name in ((10_000, "10s"), (30_000, "30s")):
+        k = lb_ms // grid_ms
+        lag = np.full(len(feats), np.nan)
+        if k < len(feats):
+            ok = (ts[k:] - ts[:-k]) == lb_ms
+            lag[k:] = np.where(ok, logmid[:-k], np.nan)
+        feats[f"ret_past_{name}"] = logmid - lag
+    return feats
+
+
+def add_cross_venue(feats: pd.DataFrame, other: pd.DataFrame, prefix: str,
+                    grid_ms: int) -> pd.DataFrame:
+    """Attach the other venue's state at the SAME grid timestamp: basis and
+    the other venue's trailing 1s return (both strictly backward-looking).
+    Grids share 500 ms epoch boundaries, so an exact ts join is causal."""
+    ots = other["ts_ms"].to_numpy(dtype=np.int64)
+    ologmid = np.log(other["mid"].to_numpy())
+    k = 1000 // grid_ms
+    oret = np.full(len(other), np.nan)
+    if k < len(other):
+        ok = (ots[k:] - ots[:-k]) == 1000
+        oret[k:] = np.where(ok, ologmid[k:] - ologmid[:-k], np.nan)
+    o = pd.DataFrame({
+        "ts_ms": ots,
+        f"{prefix}_mid": other["mid"].to_numpy(),
+        f"{prefix}_ret_1s": oret,
+        f"{prefix}_imbalance_1": other["imbalance_1"].to_numpy(),
+    })
+    merged = feats.merge(o, on="ts_ms", how="left")
+    merged[f"basis_{prefix}_bps"] = (merged[f"{prefix}_mid"] - merged["mid"]) / merged["mid"] * 1e4
+    return merged
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--grid-ms", type=int, default=500)
     ap.add_argument("--max-staleness-ms", type=int, default=1000)
+    ap.add_argument("--venues", nargs="+", default=["spot", "perp"])
     ap.add_argument("--processed-dir", default=str(ROOT / "data" / "processed"))
     args = ap.parse_args()
     pdir = Path(args.processed_dir)
-    book = pd.read_parquet(pdir / "book.parquet")
-    trades = pd.read_parquet(pdir / "trades.parquet")
-    feats = build_features(book, trades, args.grid_ms, args.max_staleness_ms)
-    feats.to_parquet(pdir / "features.parquet", index=False)
-    print(f"features: {len(feats)} rows x {feats.shape[1]} cols "
-          f"({feats['ts_ms'].iloc[0]}..{feats['ts_ms'].iloc[-1]})")
+
+    built: dict[str, pd.DataFrame] = {}
+    for venue in args.venues:
+        bpath = pdir / f"book_{venue}.parquet"
+        if not bpath.exists():
+            print(f"[features] no book for {venue}; skipping")
+            continue
+        book = pd.read_parquet(bpath)
+        trades = pd.read_parquet(pdir / f"trades_{venue}.parquet")
+        built[venue] = build_features(book, trades, args.grid_ms, args.max_staleness_ms)
+
+    if "spot" in built and "perp" in built:
+        spot = add_cross_venue(built["spot"], built["perp"], "perp", args.grid_ms)
+        perp = add_cross_venue(built["perp"], built["spot"], "spot", args.grid_ms)
+        built = {"spot": spot, "perp": perp}
+
+    for venue, feats in built.items():
+        feats.to_parquet(pdir / f"features_{venue}.parquet", index=False)
+        print(f"features_{venue}: {len(feats)} rows x {feats.shape[1]} cols")
 
 
 if __name__ == "__main__":

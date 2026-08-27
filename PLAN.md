@@ -1,40 +1,64 @@
-# PLAN
+# PLAN — v2
 
-## Goal
+v1 (complete, on `main`): imbalance predicts 1–5s BTC spot moves (AUC 0.74, IC 0.18)
+but +0.5bps gross/trade dies against 10bps taker fees. v2 pushes on the weaknesses:
+more data, perp futures, maker-side economics, and a systematic alpha search.
 
-One-day MVP answering: *does BTC/USDT top-of-book state (imbalance, microprice) predict 1s/5s mid-price moves, and does any edge survive spread + taker fees + latency?*
+## Collection (started 2026-08-27 19:42 UTC)
 
-## Environment facts (verified)
+- Spot AND USDS-M perp BTCUSDT: `depth20@100ms` + `aggTrade`, 48 h target,
+  15-min rotation, auto-reconnect. Files: `{spot|perp}_BTCUSDT_*.jsonl.gz`
+  (v1 files without venue prefix = spot).
+- Perp depth carries exchange timestamps (E/T) — spot does not; documented.
+- Regime coverage goal: US + Asia + Europe hours across ≥2 weekdays
+  (weekend only if collection extends; acknowledge if absent).
+- caffeinate -s guard; machine must stay on AC power.
 
-- macOS, no system package managers; installed `uv` + Python 3.11 venv at `.venv`.
-- Binance Spot public REST (`api.binance.com`) reachable (HTTP 200, live BTCUSDT depth returned).
-- Websocket combined stream: `wss://stream.binance.com:9443/stream?streams=btcusdt@depth20@100ms/btcusdt@aggTrade`.
-- Spot partial-depth (`depth20@100ms`) payloads carry **no exchange timestamp** (only `lastUpdateId`); local receive time is the order-book clock. aggTrade carries exchange event/trade times. Documented as a limitation.
+## Build order (against accumulating data)
 
-## Implementation sequence
+1. **preprocess v2**: venue-aware parsing (futures `b`/`a` keys, E/T), outputs
+   `book_{venue}.parquet` / `trades_{venue}.parquet`.
+2. **features v2**: same 500 ms grid & v1 definitions (unchanged params —
+   replication, not re-tuning). Drop `micro_dev_bps` from MODEL features
+   (collinear with imbalance_1: micro−mid = spread/2·I₁); add interpretable
+   candidates: event OFI, trade-burst z-scores, 10/30 s momentum/reversal,
+   liquidity state, flow×book interaction, and cross-venue basis/lead-lag
+   features (perp return → spot and vice versa).
+3. **signals module**: univariate signal-quality evaluation SEPARATE from
+   trading: per-fold OOS Spearman IC on non-overlapping samples, sign
+   consistency across chronological folds and regimes (time-of-day, vol
+   terciles). Output: replication table for every candidate.
+4. **models v2**: walk-forward (expanding window over ~4 h folds) for
+   development; FINAL ~25% holdout untouched until the very end, evaluated once.
+5. **backtest v2**: perp fee structure (maker 2 / taker 5 bps VIP0; sensitivity
+   incl. BNB 1.8/4.5 and lower tiers). EV-rule thresholding: trade only when
+   |predicted move| > round-trip cost + margin — "no trade" is a legal optimum,
+   selection never touches the holdout. Long/short reported separately.
+   Spot shorting treated as NOT frictionless (perp is the short venue).
+6. **maker sim** (new, perp fees): join-best quoting on the 500 ms grid,
+   reservation price r = mid + α·ŝ − γ·inv acting through quote pulls/skews
+   (1-tick spread ⇒ no room inside). Conservative trade-through fill model
+   (strict price-through; touch-fill as optimistic bracket), queue position
+   explicitly unknowable. Variants: symmetric / signal-skew / inventory-aware.
+   Metrics: fills, spread captured, 1 s/5 s post-fill markout (adverse
+   selection), inventory, P&L net of maker fee, max DD.
+7. **lead/lag + basis** (the one extension): perp↔spot return lead/lag at
+   0.1–5 s on the shared clock; basis distribution/dislocations; funding
+   history via REST for context.
+8. **Tests** for every new research-critical mechanism (OFI, EV threshold,
+   fill model, markout, inventory accounting).
+9. **Writeups**: update README, research note, STATUS (+ "Alpha Candidates
+   Ranked"), dashboard artifact; commit+push throughout.
 
-1. **Collector** (`src/collect.py`) — websocket → gzipped JSONL in `data/raw/`, 15-min rotation, reconnect logic. *Start immediately; runs in background (~3–4h target, works with less).*
-2. **Preprocess** (`src/preprocess.py`) — raw JSONL → two Parquet tables: `book` (recv_ts, 20 bid/ask levels) and `trades` (ts, price, qty, aggressor side from `m` flag). Sanity checks: monotone timestamps, crossed-book filter, gap detection.
-3. **Features** (`src/features.py`) — on a regular grid (default 500 ms, chosen after inspecting inter-snapshot spacing): mid, spread(bps), microprice deviation, imbalance at k∈{1,5,10,20}, signed trade flow / trade counts over 1s/5s/30s windows, short-horizon returns, rolling realized vol.
-4. **Labels** (`src/labels.py`) — forward log mid returns at h∈{1s,5s} via strictly-future asof alignment + directional labels.
-5. **Tests** (`tests/`) — imbalance/microprice arithmetic, timestamp ordering, an explicit label-leakage test (a feature computed *from* the future must not be reachable; forward return at t must equal mid at t+h vs t), execution-cost arithmetic.
-6. **Models** (`src/models.py`) — chronological 60/20/20 train/val/test split; baselines (unconditional, imbalance-sign heuristic, logistic regression); one HistGradientBoosting model. Metrics: AUC, log loss, IC (Spearman/Pearson of predicted vs realized return), calibration.
-7. **Backtest** (`src/backtest.py`) — aggressive taker test: signal > threshold → buy ask (after latency), exit at bid after horizon; symmetric for shorts. Configurable latency, taker fee, threshold. Threshold picked on validation only. Gross/net P&L, trade count, avg edge/trade, win rate, fee & latency sensitivity grids.
-8. **Figures** (`src/plots.py`) — ~5 figures into `reports/figures/`: imbalance decile vs forward return; microprice-deviation vs forward return; calibration/pred-vs-realized; net P&L vs threshold under fee/latency scenarios; cumulative P&L; signal decay 1s vs 5s (+ vol-regime split).
-9. **Write-ups** — `reports/research_note.md` (~1,200 words), README (recruiter-facing), RUNBOOK, STATUS with resume bullets / interview Q&A / LinkedIn skeleton.
-10. **Final pass** — rerun end-to-end on full collected sample, critical review, fix top weaknesses.
+## Milestones
 
-## Acceptance criteria
+- M1 (~+2 h data): v2 pipeline smoke-tested end-to-end on both venues.
+- M2 (~+6 h): first replication pass (v1 params, new period) + signal table.
+- M3 (+24 h): interim full analysis incl. maker sim; regime splits.
+- M4 (+48 h): final run, holdout evaluated ONCE, writeups, dashboard, push.
 
-- `python -m src.collect --symbol BTCUSDT --duration-minutes N` collects real data; ≥1–2h captured during the session.
-- `pytest` green, including a leakage-specific test.
-- End-to-end rerun from raw data → figures with documented commands (RUNBOOK).
-- Results honestly reported: predictive stats out-of-sample + explicit net-of-cost conclusion (an edge that dies after costs is a valid result).
-- README readable by a trader in <2 minutes; no fabricated numbers.
+## Honesty rules (unchanged)
 
-## Risks / blockers
-
-- **Session/network interruption during collection** → collector rotates files every 15 min and reconnects; pipeline works on partial data.
-- **Short sample (hours, one regime)** → acknowledged in Limitations; not fixable in one day.
-- **No exchange ts on depth snapshots** → use local recv clock; discuss latency implications.
-- No other blockers identified: endpoints verified live, no auth needed, no paid data.
+Chronological only; leakage tests must pass; holdout touched once; no
+parameter changes to flatter results; zero-trade outcomes are valid; negative
+results are results.

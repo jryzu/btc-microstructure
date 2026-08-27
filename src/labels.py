@@ -56,15 +56,22 @@ def infer_grid_ms(feats: pd.DataFrame) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--horizons-s", type=int, nargs="+", default=[1, 5])
+    ap.add_argument("--venues", nargs="+", default=["spot", "perp"])
     ap.add_argument("--processed-dir", default=str(ROOT / "data" / "processed"))
     args = ap.parse_args()
     pdir = Path(args.processed_dir)
-    feats = pd.read_parquet(pdir / "features.parquet")
-    grid_ms = infer_grid_ms(feats)
-    feats = add_labels(feats, args.horizons_s, grid_ms)
-    feats.to_parquet(pdir / "dataset.parquet", index=False)
-    n_ok = int(feats[f"fwd_ret_{args.horizons_s[0]}s"].notna().sum())
-    print(f"dataset: {len(feats)} rows, {n_ok} with valid {args.horizons_s[0]}s label (grid={grid_ms}ms)")
+    for venue in args.venues:
+        fpath = pdir / f"features_{venue}.parquet"
+        if not fpath.exists():
+            print(f"[labels] no features for {venue}; skipping")
+            continue
+        feats = pd.read_parquet(fpath)
+        grid_ms = infer_grid_ms(feats)
+        feats = add_labels(feats, args.horizons_s, grid_ms)
+        feats.to_parquet(pdir / f"dataset_{venue}.parquet", index=False)
+        n_ok = int(feats[f"fwd_ret_{args.horizons_s[0]}s"].notna().sum())
+        print(f"dataset_{venue}: {len(feats)} rows, {n_ok} valid "
+              f"{args.horizons_s[0]}s labels (grid={grid_ms}ms)")
 
 
 if __name__ == "__main__":

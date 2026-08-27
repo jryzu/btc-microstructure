@@ -32,19 +32,26 @@ from pathlib import Path
 
 import websockets
 
-WS_BASE = "wss://stream.binance.com:9443/stream"
+WS_BASES = {
+    "spot": "wss://stream.binance.com:9443/stream",
+    "perp": "wss://fstream.binance.com/stream",   # USDS-M perpetual futures
+}
 RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 
-def _segment_path(symbol: str, t: float) -> Path:
+def _segment_path(venue: str, symbol: str, t: float) -> Path:
     stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime(t))
-    return RAW_DIR / f"{symbol}_{stamp}.jsonl.gz"
+    return RAW_DIR / f"{venue}_{symbol}_{stamp}.jsonl.gz"
 
 
-async def collect(symbol: str, duration_minutes: float, rotate_minutes: float = 15.0) -> None:
+async def collect(symbol: str, duration_minutes: float, rotate_minutes: float = 15.0,
+                  venue: str = "spot") -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     sym = symbol.lower()
-    url = f"{WS_BASE}?streams={sym}@depth20@100ms/{sym}@aggTrade"
+    # USDS-M futures: the @aggTrade stream delivers no data on fstream
+    # (verified empirically 2026-08-27); @trade works and carries p/q/m/E/T.
+    trade_stream = "aggTrade" if venue == "spot" else "trade"
+    url = f"{WS_BASES[venue]}?streams={sym}@depth20@100ms/{sym}@{trade_stream}"
     deadline = time.time() + duration_minutes * 60.0
 
     stop = asyncio.Event()
@@ -70,7 +77,7 @@ async def collect(symbol: str, duration_minutes: float, rotate_minutes: float = 
         nonlocal fh, seg_end
         if fh is not None:
             fh.close()
-        path = _segment_path(symbol, now)
+        path = _segment_path(venue, symbol, now)
         fh = gzip.open(path, "at", encoding="utf-8")
         seg_end = now + rotate_minutes * 60.0
         print(f"[collect] writing {path.name}", flush=True)
@@ -103,7 +110,7 @@ async def collect(symbol: str, duration_minutes: float, rotate_minutes: float = 
                         n_msgs += 1
                         if "depth" in stream:
                             n_depth += 1
-                        elif "aggTrade" in stream:
+                        elif "aggTrade" in stream or "@trade" in stream:
                             n_trades += 1
                         if now - last_flush > 5.0:
                             fh.flush()
@@ -125,13 +132,14 @@ async def collect(symbol: str, duration_minutes: float, rotate_minutes: float = 
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Collect Binance spot depth20 + aggTrade streams.")
+    ap = argparse.ArgumentParser(description="Collect Binance depth20 + aggTrade streams (spot or USDS-M perp).")
     ap.add_argument("--symbol", default="BTCUSDT")
+    ap.add_argument("--venue", default="spot", choices=["spot", "perp"])
     ap.add_argument("--duration-minutes", type=float, default=120.0)
     ap.add_argument("--rotate-minutes", type=float, default=15.0)
     args = ap.parse_args()
     try:
-        asyncio.run(collect(args.symbol, args.duration_minutes, args.rotate_minutes))
+        asyncio.run(collect(args.symbol, args.duration_minutes, args.rotate_minutes, args.venue))
     except KeyboardInterrupt:
         sys.exit(0)
 
