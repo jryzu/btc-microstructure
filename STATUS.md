@@ -3,9 +3,67 @@
 _v2 IN PROGRESS (2026-08-27): dual-venue collection running (spot + perp,
 48 h target, started 19:42 UTC). v2 stack built and smoke-tested: walk-forward
 models, signal-replication module, EV-rule taker backtest (no-trade optimum),
-maker quoting sim with through/touch fill brackets, cross-venue features.
-Interim analyses will land as data accumulates; sections below describe v1
-until the v2 final run replaces them._
+maker quoting sim with through/touch fill brackets + 100 ms quote latency +
+liquidation-adjusted P&L, cross-venue features, robustness toolkit
+(jackknife / block bootstrap / concentration / splits), collection health
+monitor. 38 tests passing._
+
+## v2 pre-registration (see PLAN.md for the full protocol)
+
+- **Final holdout: data from 2026-08-29 07:42 UTC onward — declared before it
+  exists, evaluated exactly once at the 48 h checkpoint with frozen policies.**
+- Interim analyses use walk-forward OOS folds only; no threshold, feature,
+  horizon, or maker-parameter choice may reference holdout performance.
+- Known measurement caveat: local clock ~25 ms behind exchange time
+  (recv−E mixes latency and clock offset; cross-venue timing unaffected).
+
+## v2 career prep (provisional — no performance numbers until final run)
+
+**What v2 adds over v1:** multi-day dual-venue data (spot + perp), a
+pre-registered holdout, signal quality separated from strategy P&L,
+walk-forward replication across sessions/regimes, an economically legitimate
+short venue with correct perp fees, a conservative maker experiment with
+latency and liquidation accounting, cross-venue lead/lag & basis study, and a
+prebuilt falsification battery.
+
+**Resume bullet candidates (numbers to be filled from final run only):**
+1. Extended a BTC microstructure study to multi-day spot + perpetual-futures
+   data with a pre-registered holdout; evaluated book/flow/cross-venue signals
+   for out-of-sample replication across sessions and volatility regimes.
+2. Built a conservative market-making simulator (trade-through fills, quote
+   latency, inventory caps, liquidation-adjusted P&L) to test whether
+   short-horizon order-book signals reduce maker adverse selection.
+3. Designed the falsification pipeline (block jackknife, block bootstrap,
+   trade-concentration, regime splits, fee/latency sweeps) that any candidate
+   alpha must survive before being claimed.
+
+**60-second explanation:** "I collected synchronized spot and perp BTC books
+and trades for two days, asked which interpretable signals — imbalance, order
+flow, cross-venue lead/lag, basis — predict 1–5 s moves out-of-sample, and
+then asked the economically honest question: who could monetize them? Taker
+fees are 5–10 bps against sub-bp edges, so the focus is maker quoting: does
+the signal reduce adverse selection enough to beat maker fees under a fill
+model that assumes the worst about queue position? The final answer comes
+from a holdout that was time-stamped before the data existed."
+
+**Likely criticisms & defenses:**
+1. *"Two days is still nothing."* Correct — the design tests replication
+   across sessions/folds and reports confidence intervals, not point claims;
+   the pipeline re-runs on more data with one command.
+2. *"Your passive fills are fiction."* Queue position is unknowable from
+   public data — hence strict trade-through fills as primary (a lower bound),
+   touch fills only as a labeled optimistic bracket, plus quote latency.
+3. *"Interim peeking contaminates the holdout."* The holdout boundary is a
+   pre-registered timestamp; interim work touches only walk-forward folds,
+   and the freeze is recorded in results.json before --final runs.
+
+**Hostile trader questions (answers drafted at final):** why should OFI beat
+snapshot imbalance; why 500 ms bars; what breaks at 0 ms vs 250 ms latency;
+why is your clock trustworthy; how much P&L is one block; long vs short
+asymmetry; why ridge over boosting; what does funding do to your perp P&L;
+what capacity does sub-bp edge support; would this survive a maker rebate war?
+
+_v1 final follows below. v1 numbers refer to the Aug 25 sample only._
 
 _v1 final follows. Last updated: 2026-08-26._
 

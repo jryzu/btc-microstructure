@@ -58,8 +58,14 @@ def _grid_forward_mid(ts: np.ndarray, mid: np.ndarray, ahead_ms: int, grid_ms: i
 
 def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
                    pull_thr: float | None, inv_cap: int | None,
-                   fee_bps: float, grid_ms: int, fill_model: str = "through") -> dict:
-    """grid: ts_ms, best_bid, best_ask, mid, <signal_col>; trades sorted by recv."""
+                   fee_bps: float, grid_ms: int, fill_model: str = "through",
+                   quote_latency_ms: int = 100, taker_fee_bps: float = 5.0) -> dict:
+    """grid: ts_ms, best_bid, best_ask, mid, <signal_col>; trades sorted by recv.
+
+    Quotes decided at t (using the book seen at t) become live only at
+    t + quote_latency_ms and rest until the next decision activates: the
+    quoter cannot react to trades inside its own latency window.
+    """
     ts = grid["ts_ms"].to_numpy(dtype=np.int64)
     bid_q = grid["best_bid"].to_numpy()
     ask_q = grid["best_ask"].to_numpy()
@@ -71,9 +77,10 @@ def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
     tpx = trades["price"].to_numpy()
     tsell = trades["is_buyer_maker"].to_numpy()  # True = seller-initiated
 
-    lo = np.searchsorted(tts, ts, side="left")
-    hi = np.searchsorted(tts, ts + grid_ms, side="left")
+    lo = np.searchsorted(tts, ts + quote_latency_ms, side="left")
+    hi = np.searchsorted(tts, ts + grid_ms + quote_latency_ms, side="left")
 
+    mh = _grid_forward_mid(ts, mid, grid_ms, grid_ms)   # +1 grid step (500 ms)
     m1 = _grid_forward_mid(ts, mid, 1000, grid_ms)
     m5 = _grid_forward_mid(ts, mid, 5000, grid_ms)
 
@@ -112,7 +119,7 @@ def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
             if filled:
                 cash -= bid_q[i] * (1 + fee)
                 inv += 1
-                fills.append((1, bid_q[i], mid[i], m1[i], m5[i]))
+                fills.append((1, bid_q[i], mid[i], mh[i], m1[i], m5[i]))
         if want_ask and hi[i] > lo[i]:
             if fill_model == "through":
                 filled = bool((tpx[w] > ask_q[i]).any())
@@ -121,7 +128,7 @@ def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
             if filled:
                 cash += ask_q[i] * (1 - fee)
                 inv -= 1
-                fills.append((-1, ask_q[i], mid[i], m1[i], m5[i]))
+                fills.append((-1, ask_q[i], mid[i], mh[i], m1[i], m5[i]))
         equity[i] = cash + inv * mid[i]
 
     n = len(fills)
@@ -135,12 +142,13 @@ def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
         out["final_pnl_bps"] = 0.0
         return out
 
-    f = np.array([(side, px, m0, a, b) for side, px, m0, a, b in fills], dtype=float)
-    side, px, m0, fm1, fm5 = f[:, 0], f[:, 1], f[:, 2], f[:, 3], f[:, 4]
+    f = np.array(fills, dtype=float)
+    side, px, m0, fmh, fm1, fm5 = (f[:, i] for i in range(6))
     # spread captured at fill: how far inside our fill was vs mid (bps)
     spread_cap = side * (m0 - px) / m0 * 1e4
     # markout: mid move against our inventory after the fill (bps); negative
     # markout = adverse selection (price moved through us)
+    mkh = side * (fmh - m0) / m0 * 1e4
     mk1 = side * (fm1 - m0) / m0 * 1e4
     mk5 = side * (fm5 - m0) / m0 * 1e4
 
@@ -149,10 +157,27 @@ def simulate_maker(grid: pd.DataFrame, trades: pd.DataFrame, signal_col: str,
     peak = np.fmax.accumulate(np.where(np.isnan(eq_bps), -np.inf, eq_bps))
     dd = np.nanmax(peak - eq_bps)
 
+    # liquidation-adjusted P&L: close residual inventory aggressively at the
+    # final quotes, paying taker fees — so P&L cannot hide inside an open
+    # position marked at mid ("inventory masquerading as maker skill")
+    tfee = taker_fee_bps / 1e4
+    last = len(ts) - 1
+    if inv > 0:
+        liq_cash = cash + inv * bid_q[last] * (1 - tfee)
+    elif inv < 0:
+        liq_cash = cash + inv * ask_q[last] * (1 + tfee)
+    else:
+        liq_cash = cash
+    eq0 = equity[~np.isnan(equity)][0]
+    pnl_liq_bps = (liq_cash - eq0) / scale * 1e4
+
     out.update({
+        "total_fees_bps": float(sum(px) * fee / scale * 1e4),
+        "final_pnl_liquidation_bps": float(pnl_liq_bps),
         "n_buy_fills": int((side == 1).sum()), "n_sell_fills": int((side == -1).sum()),
         "fills_per_hour": float(n / ((ts[-1] - ts[0]) / 3.6e6)),
         "avg_spread_captured_bps": float(np.nanmean(spread_cap)),
+        "avg_markout_500ms_bps": float(np.nanmean(mkh)),
         "avg_markout_1s_bps": float(np.nanmean(mk1)),
         "avg_markout_5s_bps": float(np.nanmean(mk5)),
         "final_inventory": int(inv),

@@ -149,3 +149,45 @@ def test_markout_sign_is_adverse_when_price_moves_through_buy():
     r = simulate_maker(grid, tr, "s_ridge", None, None, 0.0, grid_ms, "through")
     assert r["n_fills"] == 1
     assert r["avg_markout_1s_bps"] < -50
+
+
+# ---------- robustness tools ----------
+
+def test_jackknife_flags_single_block_dependence():
+    from src.robustness import block_jackknife
+    ts = np.arange(100, dtype=np.int64) * 60_000  # 100 minutes
+    vals = np.zeros(100)
+    vals[30:35] = 10.0  # all P&L inside one 30-min block
+    r = block_jackknife(ts, vals, np.mean, block_ms=1_800_000)
+    assert r["max_influence"] > 0.9
+
+
+def test_bootstrap_ci_excludes_zero_for_strong_mean():
+    from src.robustness import block_bootstrap_ci
+    rng = np.random.default_rng(1)
+    vals = rng.normal(1.0, 0.5, size=2000)
+    r = block_bootstrap_ci(vals)
+    assert r["ci_excludes_zero"]
+    assert r["ci"][0] < r["mean"] < r["ci"][1]
+
+
+def test_quote_latency_blocks_prelatency_fills():
+    """A trade inside the quoter's latency window cannot fill it."""
+    grid = maker_grid(n=4)
+    tr = trades_at([(50, 99.98, True)])  # 50ms after decision, latency=100ms
+    r = simulate_maker(grid, tr, "s_ridge", None, None, 0.0, 500, "through",
+                       quote_latency_ms=100)
+    assert r["n_fills"] == 0
+    r0 = simulate_maker(grid, tr, "s_ridge", None, None, 0.0, 500, "through",
+                        quote_latency_ms=0)
+    assert r0["n_fills"] == 1
+
+
+def test_liquidation_pnl_penalizes_open_inventory():
+    """Residual inventory must be worth less after aggressive close + taker fee."""
+    grid = maker_grid(n=20)
+    tr = trades_at([(250, 99.99, True)])  # one buy fill, never closed
+    r = simulate_maker(grid, tr, "s_ridge", None, None, 0.0, 500, "through",
+                       taker_fee_bps=5.0)
+    assert r["final_inventory"] == 1
+    assert r["final_pnl_liquidation_bps"] < r["final_pnl_bps"]

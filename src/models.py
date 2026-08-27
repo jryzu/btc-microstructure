@@ -106,7 +106,8 @@ def make_models(seed: int = 7) -> dict:
     }
 
 
-def run_horizon(df: pd.DataFrame, h: int, venue: str, use_cross: bool) -> tuple[dict, pd.DataFrame]:
+def run_horizon(df: pd.DataFrame, h: int, venue: str, use_cross: bool,
+                holdout_start_ts: int | None = None) -> tuple[dict, pd.DataFrame]:
     ycol, rcol = f"fwd_up_{h}s", f"fwd_ret_{h}s"
     feats = feature_list(venue, df, use_cross)
     d = df.dropna(subset=feats + [ycol, rcol]).reset_index(drop=True)
@@ -117,7 +118,13 @@ def run_horizon(df: pd.DataFrame, h: int, venue: str, use_cross: bool) -> tuple[
     grid_ms = int(pd.Series(np.diff(d["ts_ms"].to_numpy())).mode().iloc[0])
     stride = max(1, h * 1000 // grid_ms)
 
-    n_dev = int(len(d) * (1 - HOLDOUT_FRAC))
+    # pre-registered time-based holdout beats the row-fraction fallback:
+    # v2 declared holdout = everything from 2026-08-29 07:42 UTC onward
+    # (last ~12 h of the 48 h collection), fixed BEFORE any of it existed.
+    if holdout_start_ts is not None:
+        n_dev = int((d["ts_ms"].to_numpy() < holdout_start_ts).sum())
+    else:
+        n_dev = int(len(d) * (1 - HOLDOUT_FRAC))
     bounds = np.linspace(0, n_dev, N_FOLDS + 1).astype(int)
 
     p_lr = np.full(len(d), np.nan)
@@ -176,6 +183,9 @@ def main() -> None:
     ap.add_argument("--horizons-s", type=int, nargs="+", default=[1, 5])
     ap.add_argument("--no-cross", action="store_true",
                     help="exclude cross-venue features")
+    ap.add_argument("--holdout-start-ts", type=int, default=None,
+                    help="epoch ms; pre-registered final-holdout boundary "
+                         "(v2 final run: 1787989320000 = 2026-08-29 07:42 UTC)")
     ap.add_argument("--processed-dir", default=str(ROOT / "data" / "processed"))
     args = ap.parse_args()
     pdir = Path(args.processed_dir)
@@ -187,7 +197,8 @@ def main() -> None:
     all_results.setdefault("models", {}).setdefault(args.venue, {})
 
     for h in args.horizons_s:
-        res, preds = run_horizon(df, h, args.venue, not args.no_cross)
+        res, preds = run_horizon(df, h, args.venue, not args.no_cross,
+                                 args.holdout_start_ts)
         all_results["models"][args.venue][f"{h}s"] = res
         preds.to_parquet(pdir / f"predictions_{args.venue}_{h}s.parquet", index=False)
         for name in ("imbalance_heuristic", "logistic", "gbt"):

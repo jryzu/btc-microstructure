@@ -62,3 +62,39 @@ more data, perp futures, maker-side economics, and a systematic alpha search.
 Chronological only; leakage tests must pass; holdout touched once; no
 parameter changes to flatter results; zero-trade outcomes are valid; negative
 results are results.
+
+## PRE-REGISTERED PROTOCOL (declared 2026-08-27 21:20 UTC, before the data exists)
+
+**Final holdout:** all data with recv_ts >= **2026-08-29 07:42 UTC**
+(epoch ms 1787989320000; the last ~12 h of the 48 h collection). It is
+evaluated EXACTLY ONCE, at the 48 h checkpoint, with `--final` and with every
+parameter (features, horizons, thresholds, margins, pull/inventory settings)
+frozen from the walk-forward region beforehand. No interim analysis reads it;
+nothing about the design changes after seeing it. Clock-offset note: local
+recv clock measured ~25 ms behind exchange time on 2026-08-27; recv−E numbers
+mix latency with clock offset, cross-venue comparisons are unaffected (shared
+local clock).
+
+**6 h checkpoint (~2026-08-28 01:50 UTC):**
+- run src.monitor; audit gaps/rates/rotation for both venues;
+- rebuild pipeline (no parameter changes); walk-forward metrics per venue;
+- first signals replication table (expect few folds — no conclusions);
+- maker sim mechanics check on real perp fills; commit + push. No selection freezing.
+
+**24 h checkpoint (~2026-08-28 19:42 UTC):**
+- signal replication across >= 4 independent 6 h folds, sessions, vol/liquidity
+  terciles; lead/lag + basis study with non-overlapping sampling;
+- taker EV scan and maker variant comparison on wf region;
+- "Alpha Candidates Ranked — INTERIM" table (stamped INTERIM);
+- record failed hypotheses explicitly; commit + push.
+- Candidate POLICY FREEZE for the final run happens here or at latest before
+  the holdout boundary; frozen values written into results.json.
+
+**48 h checkpoint (~2026-08-29 19:42 UTC):**
+- final rebuild on all data; holdout evaluated once (`--final`) for taker
+  and maker with frozen policies;
+- robustness battery on every surviving candidate: block jackknife,
+  block-bootstrap CI, top-N trade concentration, long/short and session
+  splits, fee/latency sensitivity, non-overlap checks;
+- writeups (README, research note, STATUS + Alpha Candidates Ranked final),
+  dashboard artifact update, push.
