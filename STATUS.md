@@ -17,6 +17,24 @@ monitor. 38 tests passing._
 - Known measurement caveat: local clock ~25 ms behind exchange time
   (recv−E mixes latency and clock offset; cross-venue timing unaffected).
 
+## Alpha Candidates Ranked — INTERIM (24h checkpoint, 2026-08-28 20:05 UTC)
+
+_Walk-forward region only. Holdout untouched. Nothing here is a final claim._
+
+| # | Candidate | Venue→Target | OOS IC (folds) | Replication | Gross econ | Net @ real fees | Confidence | Next falsification |
+|---|-----------|--------------|----------------|-------------|-----------|-----------------|------------|--------------------|
+| 1 | Perp book state leads spot (perp imbalance/returns) | perp→spot 1–5s | 0.32–0.35 (3/3, t>20) | 100% sign | predicts ~0.3–0.9bps moves | untradable as taker (spot 10bps); candidate for execution timing / maker skew | Medium-high (stat), Low (econ @VIP0) | holdout; latency sweep; session splits |
+| 2 | Own-book imbalance (L1–L20) | both, 1–5s | 0.34–0.41 (4/4, t>19) | 100% sign | +0.2–0.9bps/trade at strict thresholds (zero-fee diagnostic) | NO TRADE at real fees | High (stat), established | holdout confirmation only |
+| 3 | Signal-skewed maker quoting (defensive value) | perp | n/a (policy) | through & touch models agree | cuts per-fill loss −4.98→−3.10bps (through), −3.34→−2.04 (touch); improves touch markout −0.078→−0.053bps | still negative at 2bps maker fee; ≈breakeven only under optimistic fills + ~0 fee | Medium | holdout with frozen (thr=1.77e-5, cap=3); jackknife by block |
+| 4 | Event OFI (1s/5s) | both, 1–5s | 0.23–0.30 (4/4) | 100% sign | subsumed largely by imbalance | NO TRADE | Medium | marginal value over imbalance in ridge coefs |
+| 5 | Basis convergence, spot leg | spot 1–5s | 0.17–0.18 (3/3, t≈5.5) | 100% sign | basis σ≈0.8bps, half-life ≈6s | spot fees dwarf the effect | Low-medium | replicate across more folds; perp-hedged framing |
+
+**Failed so far:** flow×imbalance interaction (dead, both venues); basis→perp leg (weak, t≈−2); signal-skew cannot make VIP0 passive quoting profitable (even at zero fee under conservative fills); all taker policies at real fees.
+
+**Data note:** perp feed lost 16:17–18:49 UTC on 08-28 (fstream unreachable: DNS/handshake failures; collector retried throughout and self-recovered). Gap is NaN-masked; cross-venue features absent there.
+
+**Frozen for the final run** (in results.json `frozen_final_policies`): taker = NO TRADE both venues; maker = s_ridge@1s, pull_thr 1.77e-5, inv_cap 3, fee 2bps, through-fill primary; holdout boundary 1787989320000 (2026-08-29 07:42 UTC).
+
 ## v2 career prep (provisional — no performance numbers until final run)
 
 **What v2 adds over v1:** multi-day dual-venue data (spot + perp), a
