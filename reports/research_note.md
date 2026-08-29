@@ -1,135 +1,110 @@
-# Research note: Does BTC/USDT order-book imbalance survive execution costs?
+# Research note: Order-book information in BTC — who can monetize it?
 
-**Date:** 2026-08-25/26 · **Data:** Binance Spot BTCUSDT, live capture
+**Dates:** v1 2026-08-25 · v2 capture 2026-08-27→29 · **Venues:** Binance spot + USDS-M perp, BTCUSDT
 
-## Hypothesis
+## Question and design
 
-Top-of-book state — the size imbalance between bids and asks — should contain
-short-horizon information about mid-price direction: a queue that is much
-heavier on the bid side implies buying pressure and near-term upward drift.
-The economically relevant question is not whether this effect exists (it is
-well documented across markets) but whether it is large enough, on this venue
-and instrument, to overcome realistic execution costs for an aggressive
-(taker) trader.
+v1 established that top-of-book imbalance predicts BTC/USDT spot mid moves at
+1–5s but that a ~0.5bps edge cannot pay 10bps/side taker fees. v2 asks the
+harder questions: does the prediction *replicate* across days and regimes; is
+it tradable on the perp (legitimate shorts, 5bps taker, 2bps maker); does the
+information help a passive maker; and does venue fragmentation (spot vs perp)
+itself carry signal?
+
+Design guards, fixed in advance: a holdout consisting of the final 12 hours
+of collection was time-stamped 27 hours before it existed, and every
+threshold, margin, and maker parameter was frozen from walk-forward folds at
+the 24h checkpoint. Signal quality was measured separately from strategy P&L
+(per-6h-fold non-overlapping Spearman ICs, sign consistency, regime
+conditioning). "No trade" was an admissible optimum for the execution rule.
 
 ## Data
 
-I captured Binance Spot public websocket streams for BTCUSDT on 2026-08-25,
-18:46–22:55 UTC: partial order-book depth (top 20 levels, ~100 ms cadence,
-80,587 snapshots) and aggregate trades (109,563 trades). After removing
-capture gaps (the collection machine slept several times), the sample covers
-~134 clean minutes. BTC traded between $78,178 and $79,237 — a quiet, mildly
-drifting afternoon; results should be read as one regime, not a general claim.
+~46h (spot) / ~44h (perp) of clean 100ms top-20 book snapshots and trades
+(3.1M snapshots, 6.7M trades) on a shared local clock, sampled to 500ms
+(333k/317k rows). Coverage spans Asia/EU/US sessions, a quiet overnight tape
+and a violent burst (276k perp trades/15min). A 2.5h perp-feed outage
+(fstream unreachable on 08-28) and v1-era sleep gaps are masked, not bridged.
+Perp trade rate ran ~3x spot. Spread is one tick 99.9% of the time on both.
 
-Two data-quality facts shaped the design. First, spot partial-depth messages
-carry no exchange timestamp, so the local receive clock is the analysis clock;
-trades (which do carry exchange time) showed a median receive latency of
-~64 ms with a p99 near 600 ms, and snapshot arrivals are bursty (mean spacing
-exactly ~100 ms, but half arrive within 20 ms of the previous one). Second,
-the BTCUSDT spread is almost degenerate: one tick ($0.01, ~0.0013 bps) in
-99.9% of observations. That makes the spread nearly free to cross — an
-important input to the conclusion.
+## Finding 1 — prediction replicates, everywhere
 
-Events were sampled onto a 500 ms grid (book state = last snapshot at or
-before t, dropped if staler than 1 s). 500 ms halves the raw 100 ms
-autocorrelation problem while leaving ≥2 observations per 1 s horizon;
-15,975 grid rows resulted.
+Level-1/5/20 imbalance carries per-fold OOS Spearman ICs of 0.36–0.39 (spot)
+and 0.31–0.33 (perp) with the same sign in 8/8 development folds; OFI
+(0.25–0.28) and 1–30s momentum (0.10–0.26) also replicate. The composite
+ridge signal, evaluated ONCE on the pre-registered holdout, scored Spearman
+IC 0.30 (spot@1s), 0.43 (spot@5s), 0.26/0.35 (perp) — positive in 13 of 13
+hourly blocks, cross-hour t of 16–20. Whatever else is true, this
+information is real and stable.
 
-## Features and labels
+## Finding 2 — the perp is where price discovery happens
 
-Features at time t use only data received at or before t: book imbalance at
-depths 1/5/10/20, microprice−mid deviation, spread, signed trade volume and
-trade-count/imbalance over 1/5/30 s windows, past 1/5 s returns, 30 s realized
-volatility, and 5 s spread/depth changes. Labels are forward log mid returns
-at 1 s and 5 s, computed by exact timestamp-validated row shifts (a label is
-NaN if the grid row exactly h ahead is missing). A dedicated test injects an
-artificial future price jump and verifies it moves labels but no feature.
+The perp book predicts *spot's* next 1–5s at IC 0.30–0.32 (7/7 folds;
+holdout 0.26) — reliably stronger than spot's book predicts perp (0.23–0.24).
+Non-overlapping 500ms return cross-correlations agree: perp→spot at 0.5s lag
+is 0.157 vs 0.134 the other way, and the perp lead persists to ~2s while the
+spot lead dies by 1.5s. The basis (perp−spot) sat at −4.1bps (σ 0.75bps)
+all week — a negative-carry regime — mean-reverting with a ~5s half-life,
+with convergence carried by the spot leg (basis→spot IC 0.16; basis→perp
+only −0.035).
 
-One algebraic point worth recording: microprice − mid = (spread/2) ×
-level-1 imbalance, exactly. With the spread pinned at one tick, microprice
-deviation and level-1 imbalance are the same signal up to scale, and the data
-confirm their decile plots are indistinguishable. "Is microprice more
-informative than mid?" therefore collapses into the imbalance question on
-this instrument; microprice would only add information where the spread
-varies.
+## Finding 3 — no taker configuration is viable, including on the perp
 
-## Predictive results (chronological 60/20/20 split, test = final ~27 min)
+With the EV rule trading only when |predicted move| exceeds round-trip cost
+plus a wf-selected margin, the chosen policy was NO TRADE for every venue and
+horizon — at 5bps perp taker, 10bps spot, and every sensitivity tier down to
+1.8bps/side. The zero-fee diagnostic shows why: even the 98th-percentile
+signal predicts ~0.5bps and the very strictest thresholds reach only
+~0.9–1.4bps gross per trade (16–335 trades), i.e. 2.5x short of the
+*cheapest* round-trip tested. The frozen no-trade policy was confirmed on
+the holdout (zero trades, zero P&L — correctly, since any trade would have
+paid more in fees than the signal predicts in movement).
 
-Imbalance predicts. The decile plot of level-1 imbalance against forward
-return is cleanly monotone: roughly −0.34 bps to +0.30 bps average forward
-1 s return from the most ask-heavy to the most bid-heavy decile (−0.83 to
-+0.65 bps at 5 s). On the held-out test set:
+## Finding 4 — the maker experiment, and an honest failure
 
-- Raw imbalance alone: ROC AUC 0.74 (1 s), 0.67 (5 s) for direction.
-- Logistic regression and gradient boosting add little over raw imbalance
-  (AUC 0.75/0.68) — at these horizons the book is the signal, and the
-  logistic coefficients are dominated by imbalance_1 and imbalance_5.
-- A ridge regression predicting the return itself achieves an information
-  coefficient of 0.19 at 1 s. Because 500 ms sampling overlaps 1–5 s labels,
-  I recomputed the IC on non-overlapping subsamples: 0.18 at 1 s
-  (n=1,540, p≈8e-13) and 0.12 at 5 s (n=305, p≈0.05). The signal is real
-  and decays with horizon: per unit time the 1 s edge is far stronger.
-- Directional accuracy is not a headline metric here: 73% of 1 s intervals
-  have exactly zero mid change, so class balance makes accuracy misleading;
-  AUC and IC are the honest measures.
+The hypothesis: even unmonetizable directionally, the signal should let a
+maker avoid adverse selection — pull the ask when the book says "up", the bid
+when it says "down" (a discrete reservation-price skew; a 1-tick spread
+leaves no room to quote inside), with inventory caps.
 
-Calibration of predicted P(up) is approximately diagonal at both horizons.
-The relationship survives a volatility split: monotone in both the low- and
-high-volatility halves, slightly steeper at the extremes in high volatility.
-
-## Economic results: the signal does not survive taker fees
-
-The execution experiment: when the ridge signal exceeds a threshold (chosen
-on the validation set only, from |signal| quantiles), buy at the ask
-prevailing after a configurable latency, exit at the bid after the horizon;
-mirrored for shorts; one position at a time; taker fee charged both legs.
-
-At the validation-chosen threshold (~98th percentile of |signal|), the test
-set produced 47 trades at 1 s and 31 at 5 s. Average **gross** edge per trade
-— after crossing the spread, before fees — was **+0.52 bps at 1 s**; at 5 s it was
-already gone even gross (−0.05 bps). At 1 s the signal genuinely beats the spread. But at Binance's
-standard 10 bps/side taker fee the average **net** result is **−19.5 bps per
-trade**; every single trade lost net of fees. The fee sensitivity is linear
-and brutal: the strategy breaks even at roughly **0.26 bps per side** at 1 s
-— 40× below the standard fee tier and still below the best VIP taker tiers
-(~1.6–2 bps). Latency matters second-order by comparison: raising execution
-delay from 0 to 1,000 ms erodes the 1 s gross edge from +0.58 bps to −0.19
-bps, i.e. the entire alpha is gone within about a second — consistent with
-the 1 s-scale signal decay measured above.
-
-Two caveats on the backtest itself. The test period drifted mildly downward
-and the model went short in 45 of 47 trades, so the long side is essentially
-untested. And fills are assumed at the displayed top-of-book quote with no
-market impact — fine for small size, optimistic beyond it.
+Mechanically it worked; economically it did not. Under conservative
+trade-through fills at the VIP0 2bps maker fee, symmetric quoting loses
+~3.1–3.4bps per fill; the frozen skew (98th-pct pull threshold, cap 3)
+halves fill count and total losses in every period — but the *per-fill*
+improvement that appeared at the 24h checkpoint (−4.98→−3.10bps) vanished on
+the full walk-forward region (−3.12 vs −3.17) and the holdout (−3.37 vs
+−3.31), and 1s markouts were marginally worse. Under optimistic touch fills
+markouts do improve (−0.035→−0.025bps) but per-fill P&L doesn't. The sober
+reading: on a book quoting one tick wide, spread capture (~0.007bps) is
+three orders of magnitude too small for the adverse selection (−0.5 to −1bps
+markout) plus fee; the signal reduces *exposure*, not fill *quality*, and
+cannot flip the sign at any fee we tested down to zero (through-model
+−1.1bps/fill at zero fee). Passive viability requires what public data
+cannot see: queue position, rebates, and sub-tick economics.
 
 ## Interpretation
 
-The result is a textbook adverse-selection boundary. Order-book imbalance
-contains real, statistically strong information at the 1-second scale, but
-its magnitude (~0.5 bps conditional on a strong signal) is an order of
-magnitude smaller than the taker fee. Anyone paying taker fees is on the
-wrong side of the trade; the information can only be monetized by
-participants whose marginal cost per trade is near zero or negative — i.e.
-makers earning rebates, who are exactly the counterparties being adversely
-selected by this signal. For a market maker the practical use of this result
-is defensive and offensive at once: skew or pull quotes when imbalance is
-against you; lean entries when it is with you.
+Every result points the same direction. The order book broadcasts real,
+strongly replicating short-horizon information; the perp broadcasts it
+first; and the fee/latency structure prices that information at almost
+exactly its worth — leaving nothing for takers at any tier, and for makers
+only the option not to stand in front of it. The v1 conclusion generalizes:
+this is not an inefficiency, it is infrastructure. The economically valuable
+residues are defensive (quote pulling as risk reduction) and operational
+(perp-informed execution timing on spot), not directional.
 
 ## Limitations
 
-~2.2 hours of usable data from one afternoon, one venue, one instrument, one
-volatility regime; no exchange timestamps on depth snapshots (local clock);
-capture gaps from machine sleep; partial-depth stream rather than a
-reconstructed full book; overlapping labels partially mitigated by
-non-overlap ICs; short-dominated test trades; no queue/fill modeling beyond
-displayed quotes.
+Two days, one exchange, one (negative) basis regime, no weekend; holdout
+spans EU+US hours only. Fill models bracket but cannot pin reality — resting
+size would alter the queue we simulate against. Local clock offset (~−25ms)
+makes absolute latency approximate; cross-venue timing shares one clock and
+is clean. Overlapping labels mitigated by non-overlapping sampling
+throughout.
 
 ## Next experiment
 
-The natural continuation is the maker side: a reservation-price quoting
-simulation (quotes skewed by the imbalance signal and inventory) with a
-conservative trade-through fill model, to test whether the signal's value
-survives realistic queue assumptions. Secondary: longer multi-day capture
-spanning volatility regimes; per-exchange fee-tier scenario analysis; and an
-order-flow-imbalance (event-based) feature to compare against static book
-imbalance.
+Priced-to-test: (1) the maker sim at rebate-tier fees with explicit
+queue-position priors; (2) perp-signal-timed execution of a spot parent
+order, measured as implementation shortfall — the likeliest place this
+information pays anyone who isn't already an HFT.

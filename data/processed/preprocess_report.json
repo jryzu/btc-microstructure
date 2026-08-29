@@ -1,40 +1,40 @@
 {
   "spot": {
     "book": {
-      "raw_snapshots": 836856,
+      "raw_snapshots": 1665028,
       "out_of_order": 0,
       "dropped_crossed": 0,
       "dropped_nonpos": 0,
       "dropped_dupes": 0,
-      "gaps_over_5s": 18,
+      "gaps_over_5s": 25,
       "max_gap_ms": 161232577,
-      "clean_snapshots": 836856,
+      "clean_snapshots": 1665028,
       "median_spacing_ms": 100.0
     },
     "trades": {
-      "raw_trades": 1139985,
-      "median_recv_latency_ms": 58.0,
-      "p99_recv_latency_ms": 284.0,
-      "clean_trades": 1139985
+      "raw_trades": 1731703,
+      "median_recv_latency_ms": 57.0,
+      "p99_recv_latency_ms": 295.0,
+      "clean_trades": 1731703
     }
   },
   "perp": {
     "book": {
-      "raw_snapshots": 712662,
+      "raw_snapshots": 1484266,
       "out_of_order": 0,
       "dropped_crossed": 0,
       "dropped_nonpos": 0,
       "dropped_dupes": 0,
-      "gaps_over_5s": 15,
+      "gaps_over_5s": 21,
       "max_gap_ms": 7115969,
-      "clean_snapshots": 712662,
+      "clean_snapshots": 1484266,
       "median_spacing_ms": 102.0
     },
     "trades": {
-      "raw_trades": 3693855,
-      "median_recv_latency_ms": 55.0,
-      "p99_recv_latency_ms": 843.0,
-      "clean_trades": 3679386
+      "raw_trades": 5036571,
+      "median_recv_latency_ms": 59.0,
+      "p99_recv_latency_ms": 646.0,
+      "clean_trades": 5014096
     }
   }
 }

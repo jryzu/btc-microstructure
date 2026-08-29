@@ -197,7 +197,8 @@ def _strip(d: dict) -> dict:
 
 
 def run(venue: str, signal_h: int, latencyless: bool, processed_dir: Path,
-        final: bool) -> dict:
+        final: bool, frozen_pull_thr: float | None = None,
+        frozen_inv_cap: int | None = None) -> dict:
     preds = pd.read_parquet(processed_dir / f"predictions_{venue}_{signal_h}s.parquet")
     trades = pd.read_parquet(processed_dir / f"trades_{venue}.parquet")
     trades = trades.sort_values("recv_ts_ms", kind="stable")
@@ -222,6 +223,11 @@ def run(venue: str, signal_h: int, latencyless: bool, processed_dir: Path,
     baseline = next(r for r in scan if r["pull_thr"] is None)
     variants = [r for r in scan if r["pull_thr"] is not None]
     best = max(variants, key=lambda r: r["final_pnl_bps"]) if variants else None
+    if frozen_pull_thr is not None:
+        # pre-registered policy: evaluate the FROZEN config, not a re-selected one
+        best = _strip(simulate_maker(wf, trades, "s_ridge", frozen_pull_thr,
+                                     frozen_inv_cap, fee, grid_ms, "through"))
+        out["policy_source"] = "frozen_at_24h_checkpoint"
     out["wf_baseline"] = baseline
     out["wf_best_variant"] = best
 
@@ -266,10 +272,13 @@ def main() -> None:
     ap.add_argument("--venue", default="perp", choices=["perp", "spot"])
     ap.add_argument("--signal-horizon-s", type=int, default=1)
     ap.add_argument("--final", action="store_true")
+    ap.add_argument("--frozen-pull-thr", type=float, default=None)
+    ap.add_argument("--frozen-inv-cap", type=int, default=None)
     ap.add_argument("--processed-dir", default=str(ROOT / "data" / "processed"))
     args = ap.parse_args()
 
-    res = run(args.venue, args.signal_horizon_s, True, Path(args.processed_dir), args.final)
+    res = run(args.venue, args.signal_horizon_s, True, Path(args.processed_dir),
+              args.final, args.frozen_pull_thr, args.frozen_inv_cap)
     reports_path = ROOT / "reports" / "results.json"
     all_results = json.loads(reports_path.read_text()) if reports_path.exists() else {}
     all_results.setdefault("maker", {})[args.venue] = res
